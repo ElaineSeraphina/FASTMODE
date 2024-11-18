@@ -154,11 +154,6 @@ async def reload_proxy_list(proxy_file):
         logger.info(f"Daftar proxy dari {proxy_file} telah dimuat ulang.")
         return local_proxies
 
-# Fungsi untuk log penggunaan sumber daya
-def log_system_usage():
-    cpu_usage = psutil.cpu_percent(interval=1)
-    memory_usage = psutil.virtual_memory().percent
-    logger.info(f"Penggunaan CPU: {cpu_usage}% | Penggunaan Memori: {memory_usage}%")
 
 # Fungsi untuk deteksi intrusi
 def detect_intrusion():
