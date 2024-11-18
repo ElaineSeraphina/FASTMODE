@@ -1,6 +1,5 @@
 import asyncio
 import random
-import ssl
 import json
 import time
 import uuid
@@ -9,7 +8,6 @@ from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
 from subprocess import call
-from cryptography.fernet import Fernet
 
 # Membaca konfigurasi dari file config.json
 def load_config():
@@ -39,14 +37,6 @@ max_concurrent_connections = config["max_concurrent_connections"]
 
 user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
 
-# Kunci enkripsi untuk data sensitif
-encryption_key = Fernet.generate_key()
-cipher_suite = Fernet(encryption_key)
-
-# Fungsi untuk mengenkripsi data sensitif
-def encrypt_data(data):
-    return cipher_suite.encrypt(data.encode())
-
 # Fungsi pembaruan otomatis dari GitHub
 def auto_update_script():
     logger.info("Memeriksa pembaruan skrip di GitHub...")
@@ -54,7 +44,7 @@ def auto_update_script():
         call(["git", "pull"])
         logger.info("Skrip diperbarui dari GitHub.")
     else:
-        logger.warning("Repositori ini belum di-clone menggunakan git.")
+        logger.warning("Repositori ini belum di-clone menggunakan git. Silakan clone menggunakan git untuk fitur auto-update.")
         exit()
 
 async def generate_random_user_agent():
@@ -73,19 +63,15 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                     "Accept-Language": random.choice(["en-US", "en-GB", "id-ID"]),
                     "Referer": random.choice(["https://www.google.com/", "https://www.bing.com/"]),
                     "X-Forwarded-For": ".".join(map(str, (random.randint(1, 255) for _ in range(4)))),
-                    "DNT": "1",
+                    "DNT": "1",  
                     "Connection": "keep-alive"
                 }
-
-                ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-                ssl_context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1  # Disable TLS < 1.2
-                ssl_context.set_ciphers("ECDHE+AESGCM:!ECDSA")
 
                 uri = random.choice(["wss://proxy.wynd.network:4444/", "wss://proxy.wynd.network:4650/"])
                 proxy = Proxy.from_url(socks5_proxy)
 
-                async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname="proxy.wynd.network",
-                                         extra_headers=custom_headers) as websocket:
+                # Menghubungkan tanpa SSL/TLS context
+                async with proxy_connect(uri, proxy=proxy, extra_headers=custom_headers) as websocket:
 
                     async def send_ping():
                         while True:
@@ -108,7 +94,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                                     "origin_action": "AUTH",
                                     "result": {
                                         "browser_id": device_id,
-                                        "user_id": encrypt_data(user_id),
+                                        "user_id": user_id,
                                         "user_agent": custom_headers['User-Agent'],
                                         "timestamp": int(time.time()),
                                         "device_type": "desktop",
@@ -118,22 +104,22 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                                 await websocket.send(json.dumps(auth_response))
 
                             elif message.get("action") == "PONG":
-                                logger.success("BERHASIL")
+                                logger.success("BERHASIL", color="<green>")
                                 await websocket.send(json.dumps({"id": message["id"], "origin_action": "PONG"}))
 
                         except asyncio.TimeoutError:
-                            logger.warning("Koneksi Ulang")
+                            logger.warning("Koneksi Ulang", color="<yellow>")
                             break
 
             except Exception as e:
                 retries += 1
-                logger.error("Koneksi gagal, mencoba lagi...")
-                await asyncio.sleep(min(backoff, 2))
+                logger.error("Koneksi gagal, mencoba lagi...", color="<red>")
+                await asyncio.sleep(min(backoff, 2))  # Exponential backoff
                 backoff *= 1.2  
 
         if retries >= proxy_retry_limit:
             proxy_failures.append(socks5_proxy)
-            logger.info(f"Proxy {socks5_proxy} telah dihapus")
+            logger.info(f"Proxy {socks5_proxy} telah dihapus", color="<orange>")
 
 # Fungsi untuk memuat ulang daftar proxy
 async def reload_proxy_list(proxy_file):
@@ -142,13 +128,14 @@ async def reload_proxy_list(proxy_file):
     logger.info(f"Daftar proxy dari {proxy_file} telah dimuat pertama kali.")
     
     while True:
-        await asyncio.sleep(reload_interval)
+        await asyncio.sleep(reload_interval)  # Tunggu interval sebelum reload berikutnya
         with open(proxy_file, 'r') as file:
             local_proxies = file.read().splitlines()
         logger.info(f"Daftar proxy dari {proxy_file} telah dimuat ulang.")
         return local_proxies
 
 async def main(proxy_file, user_id):
+    # Cek pembaruan skrip dari GitHub
     auto_update_script()
 
     start_time = time.time()  # Waktu mulai program
@@ -158,19 +145,16 @@ async def main(proxy_file, user_id):
         local_proxies = file.read().splitlines()
     logger.info(f"Daftar proxy dari {proxy_file} pertama kali dimuat.")
     
+    # Task queue untuk membagi beban
     queue = asyncio.Queue()
     for proxy in local_proxies:
         await queue.put(proxy)
     
+    # Memulai task reload proxy secara berkala
     proxy_list_task = asyncio.create_task(reload_proxy_list(proxy_file))
 
-    semaphore = asyncio.Semaphore(max_concurrent_connections)
+    semaphore = asyncio.Semaphore(max_concurrent_connections)  # Batasi koneksi bersamaan
     proxy_failures = []
-
-    total_proxies = len(local_proxies)
-    active_proxies = total_proxies - len(proxy_failures)
-    logger.info(f"Program berjalan selama: {str(time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time)))}")
-    logger.info(f"Total Proxy: {total_proxies} | Aktif: {active_proxies} | Gagal: {len(proxy_failures)}")
 
     tasks = []
     for _ in range(len(local_proxies)):
@@ -186,5 +170,5 @@ async def process_proxy(queue, user_id, semaphore, proxy_failures):
 
 if __name__ == "__main__":
     user_id = input("Masukkan user ID Anda: ")
-    proxy_file = 'proxy_1.txt'
+    proxy_file = 'proxy_1.txt'  # Ubah ini sesuai dengan file proxy yang digunakan
     asyncio.run(main(proxy_file, user_id))
