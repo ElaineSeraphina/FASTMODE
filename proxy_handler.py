@@ -8,6 +8,7 @@ from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
 from subprocess import call
+from cryptography.fernet import Fernet
 
 # Membaca konfigurasi dari file config.json
 def load_config():
@@ -36,6 +37,14 @@ reload_interval = config["reload_interval"]
 max_concurrent_connections = config["max_concurrent_connections"]
 
 user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
+
+# Kunci enkripsi untuk data sensitif
+encryption_key = Fernet.generate_key()
+cipher_suite = Fernet(encryption_key)
+
+# Fungsi untuk mengenkripsi data sensitif
+def encrypt_data(data):
+    return cipher_suite.encrypt(data.encode())
 
 # Fungsi pembaruan otomatis dari GitHub
 def auto_update_script():
@@ -70,9 +79,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                 uri = random.choice(["wss://proxy.wynd.network:4444/", "wss://proxy.wynd.network:4650/"])
                 proxy = Proxy.from_url(socks5_proxy)
 
-                # Menghubungkan tanpa SSL/TLS context
-                async with proxy_connect(uri, proxy=proxy, extra_headers=custom_headers) as websocket:
-
+                async with proxy_connect(uri, proxy=proxy, server_hostname="proxy.wynd.network", extra_headers=custom_headers) as websocket:
                     async def send_ping():
                         while True:
                             ping_message = json.dumps({
@@ -94,7 +101,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                                     "origin_action": "AUTH",
                                     "result": {
                                         "browser_id": device_id,
-                                        "user_id": user_id,
+                                        "user_id": encrypt_data(user_id),  # Data sensitif dienkripsi
                                         "user_agent": custom_headers['User-Agent'],
                                         "timestamp": int(time.time()),
                                         "device_type": "desktop",
@@ -134,6 +141,11 @@ async def reload_proxy_list(proxy_file):
         logger.info(f"Daftar proxy dari {proxy_file} telah dimuat ulang.")
         return local_proxies
 
+# Fungsi untuk mencatat waktu program berjalan
+def log_program_duration(start_time):
+    elapsed_time = time.time() - start_time
+    logger.info(f"Program telah berjalan selama {elapsed_time:.2f} detik.")
+    
 async def main(proxy_file, user_id):
     # Cek pembaruan skrip dari GitHub
     auto_update_script()
@@ -156,10 +168,21 @@ async def main(proxy_file, user_id):
     semaphore = asyncio.Semaphore(max_concurrent_connections)  # Batasi koneksi bersamaan
     proxy_failures = []
 
+    # Log status awal
+    total_proxies = len(local_proxies)
+    active_proxies = total_proxies - len(proxy_failures)
+    logger.info(f"Program berjalan selama: {str(time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time)))}")
+    logger.info(f"Total Proxy: {total_proxies} | Aktif: {active_proxies} | Gagal: {len(proxy_failures)}")
+
     tasks = []
     for _ in range(len(local_proxies)):
         task = asyncio.create_task(process_proxy(queue, user_id, semaphore, proxy_failures))
         tasks.append(task)
+
+    # Log penggunaan sumber daya setiap detik
+    while True:
+        log_program_duration(start_time)
+        await asyncio.sleep(1)  # Perbarui penggunaan waktu setiap detik
 
     await asyncio.gather(*tasks)
 
