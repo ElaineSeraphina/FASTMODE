@@ -180,10 +180,13 @@ async def main(proxy_file, user_id):
         tasks.append(task)
 
     # Log penggunaan sumber daya setiap detik
-    while True:
-        log_program_duration(start_time)
-        await asyncio.sleep(1)  # Perbarui penggunaan waktu setiap detik
-
+    try:
+        while True:
+            log_program_duration(start_time)
+            await asyncio.sleep(1)  # Perbarui penggunaan waktu setiap detik
+    except asyncio.CancelledError:
+        logger.info("Program dihentikan.")
+    
     await asyncio.gather(*tasks)
 
 async def process_proxy(queue, user_id, semaphore, proxy_failures):
